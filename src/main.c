@@ -13,6 +13,8 @@
 #include <X11/extensions/Xfixes.h>
 #include <X11/extensions/Xrender.h>
 
+#include "config.h"
+
 static volatile sig_atomic_t keep_running = 1;
 
 static void handle_signal(int signum) {
@@ -81,6 +83,39 @@ static void set_window_type(Display *display, Window window, Atom property, cons
                     (unsigned char *)&value, 1);
 }
 
+static void measure_text(Display *display, XftFont *font, const char *text,
+                         int *text_width, int *text_height) {
+    XGlyphInfo extents;
+    XftTextExtentsUtf8(display, font, (const FcChar8 *)text, (int)strlen(text), &extents);
+    *text_width = extents.xOff;
+    *text_height = font->ascent + font->descent;
+}
+
+static void move_to_bottom_right(Display *display, int screen, Window window,
+                                 int window_width, int window_height) {
+    int x = DisplayWidth(display, screen) - window_width - CCLOCK_MARGIN_RIGHT;
+    int y = DisplayHeight(display, screen) - window_height - CCLOCK_MARGIN_BOTTOM;
+    XMoveResizeWindow(display, window, x, y, (unsigned int)window_width,
+                      (unsigned int)window_height);
+}
+
+static void draw_clock(Display *display, Window window, XftDraw *draw, XftFont *font,
+                       XftColor *color, const char *text, int window_width,
+                       int window_height) {
+    int text_width = 0;
+    int text_height = 0;
+    measure_text(display, font, text, &text_width, &text_height);
+
+    int baseline = CCLOCK_PADDING_Y + font->ascent;
+    int x = window_width - text_width - CCLOCK_PADDING_X;
+    int y = baseline;
+
+    XClearWindow(display, window);
+    XftDrawStringUtf8(draw, color, font, x, y, (const FcChar8 *)text, (int)strlen(text));
+    XFlush(display);
+    (void)window_height;
+}
+
 int main(void) {
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
@@ -103,12 +138,7 @@ int main(void) {
     Colormap colormap =
         XCreateColormap(display, RootWindow(display, screen), visual, AllocNone);
 
-    int width = 180;
-    int height = 42;
-    int screen_width = DisplayWidth(display, screen);
-    int screen_height = DisplayHeight(display, screen);
-    int margin_x = 16;
-    int margin_y = 10;
+    Display *display_for_metrics = display;
 
     XSetWindowAttributes attributes;
     memset(&attributes, 0, sizeof(attributes));
@@ -117,10 +147,11 @@ int main(void) {
     attributes.border_pixel = 0;
     attributes.override_redirect = True;
 
+    int width = 1;
+    int height = 1;
     Window window = XCreateWindow(
-        display, RootWindow(display, screen), screen_width - width - margin_x,
-        screen_height - height - margin_y, (unsigned int)width, (unsigned int)height, 0,
-        depth, InputOutput, visual,
+        display, RootWindow(display, screen), 0, 0, (unsigned int)width,
+        (unsigned int)height, 0, depth, InputOutput, visual,
         CWColormap | CWBackPixel | CWBorderPixel | CWOverrideRedirect, &attributes);
 
     Atom net_wm_state = XInternAtom(display, "_NET_WM_STATE", False);
@@ -139,7 +170,7 @@ int main(void) {
     XFixesSetWindowShapeRegion(display, window, ShapeInput, 0, 0, region);
     XFixesDestroyRegion(display, region);
 
-    XMapRaised(display, window);
+    XSelectInput(display, window, ExposureMask | StructureNotifyMask);
 
     XftDraw *draw = XftDrawCreate(display, window, visual, colormap);
     if (draw == NULL) {
@@ -150,9 +181,9 @@ int main(void) {
         return 1;
     }
 
-    XftFont *font = XftFontOpenName(display, screen, "monospace-24");
+    XftFont *font = XftFontOpenName(display, screen, CCLOCK_FONT_NAME);
     if (font == NULL) {
-        fputs("failed to load font monospace-24\n", stderr);
+        fprintf(stderr, "failed to load font %s\n", CCLOCK_FONT_NAME);
         XftDrawDestroy(draw);
         XDestroyWindow(display, window);
         XFreeColormap(display, colormap);
@@ -160,11 +191,18 @@ int main(void) {
         return 1;
     }
 
+    int sample_width = 0;
+    int sample_height = 0;
+    measure_text(display_for_metrics, font, CCLOCK_SAMPLE_TEXT, &sample_width, &sample_height);
+    width = sample_width + (CCLOCK_PADDING_X * 2);
+    height = sample_height + (CCLOCK_PADDING_Y * 2);
+    move_to_bottom_right(display, screen, window, width, height);
+
     XRenderColor text_color = {
-        .red = 0xffff,
-        .green = 0xa800,
-        .blue = 0x0000,
-        .alpha = 0xd000,
+        .red = CCLOCK_TEXT_RED,
+        .green = CCLOCK_TEXT_GREEN,
+        .blue = CCLOCK_TEXT_BLUE,
+        .alpha = CCLOCK_TEXT_ALPHA,
     };
     XftColor color;
     if (!XftColorAllocValue(display, visual, colormap, &text_color, &color)) {
@@ -177,28 +215,40 @@ int main(void) {
         return 1;
     }
 
+    XMapRaised(display, window);
+
     char previous_text[16] = "";
 
     while (keep_running) {
+        while (XPending(display) > 0) {
+            XEvent event;
+            XNextEvent(display, &event);
+            if (event.type == ConfigureNotify) {
+                move_to_bottom_right(display, screen, window, width, height);
+            }
+            if (event.type == Expose) {
+                if (previous_text[0] != '\0') {
+                    draw_clock(display, window, draw, font, &color, previous_text, width,
+                               height);
+                }
+            }
+        }
+
         time_t now = time(NULL);
         struct tm local_time;
-        localtime_r(&now, &local_time);
+        if (localtime_r(&now, &local_time) == NULL) {
+            perror("localtime_r");
+            break;
+        }
 
         char text[16];
-        strftime(text, sizeof(text), "%H:%M:%S", &local_time);
+        if (strftime(text, sizeof(text), CCLOCK_TIME_FORMAT, &local_time) == 0) {
+            fputs("strftime failed\n", stderr);
+            break;
+        }
 
         if (strcmp(text, previous_text) != 0) {
-            XClearWindow(display, window);
-
-            XGlyphInfo extents;
-            XftTextExtentsUtf8(display, font, (const FcChar8 *)text,
-                               (int)strlen(text), &extents);
-            int x = width - extents.xOff - 8;
-            int y = font->ascent + 4;
-
-            XftDrawStringUtf8(draw, &color, font, x, y, (const FcChar8 *)text,
-                              (int)strlen(text));
-            XFlush(display);
+            draw_clock(display, window, draw, font, &color, text, width, height);
             memcpy(previous_text, text, sizeof(text));
         }
 

@@ -1,0 +1,19 @@
+#ifndef CCLOCK_CONFIG_H
+#define CCLOCK_CONFIG_H
+
+#define CCLOCK_FONT_NAME "Monospace:size=34"
+
+#define CCLOCK_TEXT_RED 0xefef
+#define CCLOCK_TEXT_GREEN 0xefef
+#define CCLOCK_TEXT_BLUE 0x8f8f
+#define CCLOCK_TEXT_ALPHA 0xf0f0
+
+#define CCLOCK_MARGIN_RIGHT 10
+#define CCLOCK_MARGIN_BOTTOM 20
+#define CCLOCK_PADDING_X 8
+#define CCLOCK_PADDING_Y 4
+
+#define CCLOCK_SAMPLE_TEXT "00:00:00"
+#define CCLOCK_TIME_FORMAT "%H:%M:%S"
+
+#endif
