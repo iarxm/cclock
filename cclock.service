@@ -1,0 +1,12 @@
+[Unit]
+Description=cclock overlay
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cclock
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

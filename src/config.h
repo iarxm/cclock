@@ -1,11 +1,11 @@
 #ifndef CCLOCK_CONFIG_H
 #define CCLOCK_CONFIG_H
 
-#define CCLOCK_FONT_NAME "Monospace:size=34"
+#define CCLOCK_FONT_NAME "Monospace:size=36"
 
-#define CCLOCK_TEXT_RED 0xefef
-#define CCLOCK_TEXT_GREEN 0xefef
-#define CCLOCK_TEXT_BLUE 0x8f8f
+#define CCLOCK_TEXT_RED 0xf3f3
+#define CCLOCK_TEXT_GREEN 0xf1f1
+#define CCLOCK_TEXT_BLUE 0xa4a4
 #define CCLOCK_TEXT_ALPHA 0xf0f0
 
 #define CCLOCK_MARGIN_RIGHT 10

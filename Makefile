@@ -8,13 +8,22 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs $(PKGS))
 
 TARGET = cclock
 SRC = src/main.c
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
 
-.PHONY: all clean
+.PHONY: all clean install uninstall
 
 all: $(TARGET)
 
 $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDLIBS)
+
+install: $(TARGET)
+	install -d "$(DESTDIR)$(BINDIR)"
+	install -m 755 $(TARGET) "$(DESTDIR)$(BINDIR)/$(TARGET)"
+
+uninstall:
+	rm -f "$(DESTDIR)$(BINDIR)/$(TARGET)"
 
 clean:
 	rm -f $(TARGET)

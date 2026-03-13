@@ -1,0 +1,4 @@
+STYLE
+
+Follow suckless engineering principles
+Assume high degree of know how, and explicit instructions such as 'make' or 'edit config.h' are not required and assumed by users
