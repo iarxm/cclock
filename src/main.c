@@ -116,9 +116,24 @@ static void draw_clock(Display *display, Window window, XftDraw *draw, XftFont *
     (void)window_height;
 }
 
+static int validate_config(void) {
+    if (strlen(CCLOCK_LAYOUT_TEXT) + 1 > CCLOCK_TEXT_BUFFER_SIZE) {
+        fprintf(stderr,
+                "configured layout text exceeds CCLOCK_TEXT_BUFFER_SIZE (%d)\n",
+                CCLOCK_TEXT_BUFFER_SIZE);
+        return -1;
+    }
+
+    return 0;
+}
+
 int main(void) {
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
+
+    if (validate_config() != 0) {
+        return 1;
+    }
 
     Display *display = XOpenDisplay(NULL);
     if (display == NULL) {
@@ -193,7 +208,8 @@ int main(void) {
 
     int sample_width = 0;
     int sample_height = 0;
-    measure_text(display_for_metrics, font, CCLOCK_SAMPLE_TEXT, &sample_width, &sample_height);
+    measure_text(display_for_metrics, font, CCLOCK_LAYOUT_TEXT, &sample_width,
+                 &sample_height);
     width = sample_width + (CCLOCK_PADDING_X * 2);
     height = sample_height + (CCLOCK_PADDING_Y * 2);
     move_to_bottom_right(display, screen, window, width, height);
@@ -217,7 +233,8 @@ int main(void) {
 
     XMapRaised(display, window);
 
-    char previous_text[16] = "";
+    char previous_text[CCLOCK_TEXT_BUFFER_SIZE];
+    previous_text[0] = '\0';
 
     while (keep_running) {
         while (XPending(display) > 0) {
@@ -241,7 +258,7 @@ int main(void) {
             break;
         }
 
-        char text[16];
+        char text[CCLOCK_TEXT_BUFFER_SIZE];
         if (strftime(text, sizeof(text), CCLOCK_TIME_FORMAT, &local_time) == 0) {
             fputs("strftime failed\n", stderr);
             break;
