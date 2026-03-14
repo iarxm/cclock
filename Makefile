@@ -8,6 +8,7 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs $(PKGS))
 
 TARGET = cclock
 SRC = src/main.c
+CFG = src/config.h
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 
@@ -15,7 +16,7 @@ BINDIR ?= $(PREFIX)/bin
 
 all: $(TARGET)
 
-$(TARGET): $(SRC)
+$(TARGET): $(SRC) $(CFG)
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 install: $(TARGET)

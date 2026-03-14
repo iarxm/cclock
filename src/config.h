@@ -14,7 +14,7 @@
 #define CCLOCK_PADDING_X 8
 #define CCLOCK_PADDING_Y 4
 
-#define CCLOCK_LAYOUT_TEXT "00:00:00"
-#define CCLOCK_TIME_FORMAT "%H:%M:%S"
+#define CCLOCK_LAYOUT_TEXT "00000000"
+#define CCLOCK_TIME_FORMAT "%d%H%M%S"
 
 #endif
