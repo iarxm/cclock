@@ -16,6 +16,7 @@
 #include "config.h"
 
 static volatile sig_atomic_t keep_running = 1;
+static const time_t STACK_REFRESH_INTERVAL_SECONDS = 5 * 60;
 
 static void handle_signal(int signum) {
     (void)signum;
@@ -235,6 +236,7 @@ int main(void) {
 
     char previous_text[CCLOCK_TEXT_BUFFER_SIZE];
     previous_text[0] = '\0';
+    time_t next_stack_refresh = time(NULL) + STACK_REFRESH_INTERVAL_SECONDS;
 
     while (keep_running) {
         while (XPending(display) > 0) {
@@ -267,6 +269,12 @@ int main(void) {
         if (strcmp(text, previous_text) != 0) {
             draw_clock(display, window, draw, font, &color, text, width, height);
             memcpy(previous_text, text, sizeof(text));
+        }
+
+        if (now >= next_stack_refresh) {
+            XRaiseWindow(display, window);
+            XFlush(display);
+            next_stack_refresh = now + STACK_REFRESH_INTERVAL_SECONDS;
         }
 
         if (sleep_until_next_second() != 0) {
