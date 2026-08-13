@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <dirent.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -23,6 +24,127 @@
 
 static volatile sig_atomic_t keep_running = 1;
 static const time_t STACK_REFRESH_INTERVAL_SECONDS = 5 * 60;
+
+enum color_index {
+    COLOR_TEXT,
+    COLOR_DATE,
+    COLOR_SECONDS,
+    COLOR_WORKSPACE,
+    COLOR_LIGHT_TEXT,
+    COLOR_LIGHT_DATE,
+    COLOR_LIGHT_SECONDS,
+    COLOR_LIGHT_WORKSPACE,
+    COLOR_DARK_TEXT,
+    COLOR_DARK_DATE,
+    COLOR_DARK_SECONDS,
+    COLOR_DARK_WORKSPACE,
+    COLOR_COUNT,
+};
+
+static XRenderColor light_equivalent(XRenderColor color) {
+    color.red += (0xffff - color.red) * 3 / 4;
+    color.green += (0xffff - color.green) * 3 / 4;
+    color.blue += (0xffff - color.blue) * 3 / 4;
+    return color;
+}
+
+static XRenderColor dark_equivalent(XRenderColor color) {
+    color.red /= 3;
+    color.green /= 3;
+    color.blue /= 3;
+    return color;
+}
+
+static int allocate_color(Display *display, Visual *visual, Colormap colormap,
+                          XRenderColor color, XftColor *result) {
+    return XftColorAllocValue(display, visual, colormap, &color, result) ? 0 : -1;
+}
+
+static int read_power_supply_value(const char *battery, const char *name, long long *value) {
+    char path[256];
+    FILE *file;
+
+    if (snprintf(path, sizeof(path), "/sys/class/power_supply/%s/%s", battery, name)
+        >= (int)sizeof(path))
+        return -1;
+    file = fopen(path, "r");
+    if (file == NULL || fscanf(file, "%lld", value) != 1) {
+        if (file != NULL)
+            fclose(file);
+        return -1;
+    }
+    fclose(file);
+    return 0;
+}
+
+static int battery_remaining_time(char *battery_text, size_t size) {
+    DIR *directory;
+    struct dirent *entry;
+    char type[32];
+    char status[32];
+    long long remaining;
+    long long rate;
+
+    battery_text[0] = '\0';
+    directory = opendir("/sys/class/power_supply");
+    if (directory == NULL)
+        return -1;
+    while ((entry = readdir(directory)) != NULL) {
+        char path[256];
+        FILE *file;
+        long long seconds;
+        long long hours;
+        long long minutes;
+
+        if (entry->d_name[0] == '.')
+            continue;
+        if (snprintf(path, sizeof(path), "/sys/class/power_supply/%s/type", entry->d_name)
+            >= (int)sizeof(path))
+            continue;
+        file = fopen(path, "r");
+        if (file == NULL || fgets(type, sizeof(type), file) == NULL) {
+            if (file != NULL)
+                fclose(file);
+            continue;
+        }
+        fclose(file);
+        if (strcmp(type, "Battery\n") != 0)
+            continue;
+        if (snprintf(path, sizeof(path), "/sys/class/power_supply/%s/status", entry->d_name)
+            >= (int)sizeof(path))
+            continue;
+        file = fopen(path, "r");
+        if (file == NULL || fgets(status, sizeof(status), file) == NULL) {
+            if (file != NULL)
+                fclose(file);
+            continue;
+        }
+        fclose(file);
+        if (strcmp(status, "Discharging\n") != 0)
+            continue;
+        if (read_power_supply_value(entry->d_name, "energy_now", &remaining) != 0
+            || read_power_supply_value(entry->d_name, "power_now", &rate) != 0) {
+            if (read_power_supply_value(entry->d_name, "charge_now", &remaining) != 0
+                || read_power_supply_value(entry->d_name, "current_now", &rate) != 0)
+                continue;
+        }
+        if (remaining < 0 || rate <= 0)
+            continue;
+        seconds = (remaining * 3600) / rate;
+        if (seconds >= 60 * 60)
+            continue;
+        hours = seconds / 3600;
+        minutes = (seconds % 3600) / 60;
+        if (snprintf(battery_text, size, "%02lld%02lld", hours, minutes) >= (int)size) {
+            closedir(directory);
+            return -1;
+        }
+        closedir(directory);
+        return 0;
+    }
+    closedir(directory);
+    return -1;
+}
 
 static void handle_signal(int signum) {
     (void)signum;
@@ -181,6 +303,57 @@ static void measure_text(Display *display, XftFont *font, const char *text,
     *text_height = font->ascent + font->descent;
 }
 
+static unsigned long pixel_component(unsigned long pixel, unsigned long mask) {
+    unsigned long maximum;
+    unsigned int shift = 0;
+
+    if (mask == 0)
+        return 0;
+    while ((mask & 1) == 0) {
+        mask >>= 1;
+        shift++;
+    }
+    maximum = mask;
+    return (((pixel >> shift) & maximum) * 0xffff) / maximum;
+}
+
+static int root_background_is_light(Display *display, Window root, Visual *visual, int x,
+                                    int y, int width, int height) {
+    unsigned long luminance = 0;
+    unsigned long samples = 0;
+    XImage *image;
+
+    if (width <= 0 || height <= 0)
+        return 0;
+    image = XGetImage(display, root, x, y, (unsigned int)width, (unsigned int)height,
+                      AllPlanes, ZPixmap);
+    if (image == NULL)
+        return 0;
+    for (int row = 0; row < height; row += 4) {
+        for (int column = 0; column < width; column += 4) {
+            unsigned long pixel = XGetPixel(image, column, row);
+            unsigned long red = pixel_component(pixel, visual->red_mask);
+            unsigned long green = pixel_component(pixel, visual->green_mask);
+            unsigned long blue = pixel_component(pixel, visual->blue_mask);
+
+            luminance += (red * 2126 + green * 7152 + blue * 722) / 10000;
+            samples++;
+        }
+    }
+    XDestroyImage(image);
+    return samples != 0 && luminance / samples >= 0x8000;
+}
+
+static XftColor *span_color(Display *display, Window root, Visual *root_visual,
+                            XftColor *colors, enum color_index base, int x, int y,
+                            int width, int height) {
+    if (!CCLOCK_DYNAMIC_COLOURS)
+        return &colors[base];
+    if (root_background_is_light(display, root, root_visual, x, y, width, height))
+        return &colors[base + COLOR_DARK_TEXT - COLOR_TEXT];
+    return &colors[base + COLOR_LIGHT_TEXT - COLOR_TEXT];
+}
+
 static void move_to_bottom_right(Display *display, int screen, Window window,
                                  int window_width, int window_height) {
     int x = DisplayWidth(display, screen) - window_width - CCLOCK_MARGIN_RIGHT;
@@ -214,9 +387,25 @@ static int draw_text(Display *display, XftDraw *draw, XftFont *font, XftColor *c
     return x + text_width;
 }
 
+static int draw_span(Display *display, Window root, Visual *root_visual, XftDraw *draw,
+                     XftFont *font, XftColor *colors, enum color_index base,
+                     const char *text, int root_x, int root_y, int x, int y,
+                     int window_height) {
+    int width = 0;
+    int height = 0;
+
+    if (text[0] == '\0')
+        return x;
+    measure_text(display, font, text, &width, &height);
+    return draw_text(display, draw, font,
+                     span_color(display, root, root_visual, colors, base, root_x + x,
+                                root_y, width, window_height),
+                     text, x, y);
+}
+
 static void draw_clock(Display *display, Window window, XftDraw *draw, XftFont *font,
-                       XftColor *color, XftColor *date_color, XftColor *seconds_color,
-                       XftColor *workspace_color, const char *workspace, const char *date,
+                       Window root, Visual *root_visual, XftColor *colors,
+                       const char *workspace, const char *battery, const char *date,
                        const char *time_text, const char *seconds, const char *text,
                        int window_width, int window_height) {
     int text_width = 0;
@@ -226,14 +415,25 @@ static void draw_clock(Display *display, Window window, XftDraw *draw, XftFont *
     int baseline = CCLOCK_PADDING_Y + font->ascent;
     int x = window_width - text_width - CCLOCK_PADDING_X;
     int y = baseline;
+    int root_x = DisplayWidth(display, DefaultScreen(display)) - window_width
+        - CCLOCK_MARGIN_RIGHT;
+    int root_y = DisplayHeight(display, DefaultScreen(display)) - window_height
+        - CCLOCK_MARGIN_BOTTOM;
 
     XClearWindow(display, window);
-    x = draw_text(display, draw, font, workspace_color, workspace, x, y);
+    x = draw_span(display, root, root_visual, draw, font, colors, COLOR_WORKSPACE,
+                  workspace, root_x, root_y, x, y, window_height);
     if (workspace[0] != '\0')
-        x = draw_text(display, draw, font, color, CCLOCK_WORKSPACE_SEPARATOR, x, y);
-    x = draw_text(display, draw, font, date_color, date, x, y);
-    x = draw_text(display, draw, font, color, time_text, x, y);
-    draw_text(display, draw, font, seconds_color, seconds, x, y);
+        x = draw_span(display, root, root_visual, draw, font, colors, COLOR_TEXT,
+                      CCLOCK_WORKSPACE_SEPARATOR, root_x, root_y, x, y, window_height);
+    x = draw_span(display, root, root_visual, draw, font, colors, COLOR_TEXT, battery,
+                  root_x, root_y, x, y, window_height);
+    x = draw_span(display, root, root_visual, draw, font, colors, COLOR_DATE, date,
+                  root_x, root_y, x, y, window_height);
+    x = draw_span(display, root, root_visual, draw, font, colors, COLOR_TEXT, time_text,
+                  root_x, root_y, x, y, window_height);
+    draw_span(display, root, root_visual, draw, font, colors, COLOR_SECONDS, seconds,
+              root_x, root_y, x, y, window_height);
     XFlush(display);
     (void)window_height;
 }
@@ -350,76 +550,34 @@ int main(void) {
     resize_for_text(display_for_metrics, screen, window, font, CCLOCK_LAYOUT_TEXT, &width,
                     &height);
 
-    XRenderColor text_color = {
-        .red = CCLOCK_TEXT_RED,
-        .green = CCLOCK_TEXT_GREEN,
-        .blue = CCLOCK_TEXT_BLUE,
-        .alpha = CCLOCK_TEXT_ALPHA,
+    XRenderColor configured_colors[COLOR_WORKSPACE + 1] = {
+        [COLOR_TEXT] = { CCLOCK_TEXT_RED, CCLOCK_TEXT_GREEN, CCLOCK_TEXT_BLUE,
+                         CCLOCK_TEXT_ALPHA },
+        [COLOR_DATE] = { CCLOCK_DATE_RED, CCLOCK_DATE_GREEN, CCLOCK_DATE_BLUE,
+                         CCLOCK_DATE_ALPHA },
+        [COLOR_SECONDS] = { CCLOCK_SECONDS_RED, CCLOCK_SECONDS_GREEN,
+                            CCLOCK_SECONDS_BLUE, CCLOCK_SECONDS_ALPHA },
+        [COLOR_WORKSPACE] = { CCLOCK_WORKSPACE_RED, CCLOCK_WORKSPACE_GREEN,
+                              CCLOCK_WORKSPACE_BLUE, CCLOCK_WORKSPACE_ALPHA },
     };
-    XftColor color;
-    if (!XftColorAllocValue(display, visual, colormap, &text_color, &color)) {
-        fputs("failed to allocate text color\n", stderr);
-        XftFontClose(display, font);
-        XftDrawDestroy(draw);
-        XDestroyWindow(display, window);
-        XFreeColormap(display, colormap);
-        XCloseDisplay(display);
-        close(control_fd);
-        unlink(control_path);
-        return 1;
+    XRenderColor color_values[COLOR_COUNT];
+    XftColor colors[COLOR_COUNT];
+    int allocated_colors = 0;
+
+    for (int i = COLOR_TEXT; i <= COLOR_WORKSPACE; ++i) {
+        color_values[i] = configured_colors[i];
+        color_values[COLOR_LIGHT_TEXT + i] = light_equivalent(configured_colors[i]);
+        color_values[COLOR_DARK_TEXT + i] = dark_equivalent(configured_colors[i]);
     }
-    XRenderColor date_text_color = {
-        .red = CCLOCK_DATE_RED,
-        .green = CCLOCK_DATE_GREEN,
-        .blue = CCLOCK_DATE_BLUE,
-        .alpha = CCLOCK_DATE_ALPHA,
-    };
-    XftColor date_color;
-    if (!XftColorAllocValue(display, visual, colormap, &date_text_color, &date_color)) {
-        fputs("failed to allocate date text color\n", stderr);
-        XftColorFree(display, visual, colormap, &color);
-        XftFontClose(display, font);
-        XftDrawDestroy(draw);
-        XDestroyWindow(display, window);
-        XFreeColormap(display, colormap);
-        XCloseDisplay(display);
-        close(control_fd);
-        unlink(control_path);
-        return 1;
-    }
-    XRenderColor seconds_text_color = {
-        .red = CCLOCK_SECONDS_RED,
-        .green = CCLOCK_SECONDS_GREEN,
-        .blue = CCLOCK_SECONDS_BLUE,
-        .alpha = CCLOCK_SECONDS_ALPHA,
-    };
-    XftColor seconds_color;
-    if (!XftColorAllocValue(display, visual, colormap, &seconds_text_color, &seconds_color)) {
-        fputs("failed to allocate seconds text color\n", stderr);
-        XftColorFree(display, visual, colormap, &date_color);
-        XftColorFree(display, visual, colormap, &color);
-        XftFontClose(display, font);
-        XftDrawDestroy(draw);
-        XDestroyWindow(display, window);
-        XFreeColormap(display, colormap);
-        XCloseDisplay(display);
-        close(control_fd);
-        unlink(control_path);
-        return 1;
-    }
-    XRenderColor workspace_text_color = {
-        .red = CCLOCK_WORKSPACE_RED,
-        .green = CCLOCK_WORKSPACE_GREEN,
-        .blue = CCLOCK_WORKSPACE_BLUE,
-        .alpha = CCLOCK_WORKSPACE_ALPHA,
-    };
-    XftColor workspace_color;
-    if (!XftColorAllocValue(display, visual, colormap, &workspace_text_color,
-                            &workspace_color)) {
-        fputs("failed to allocate workspace text color\n", stderr);
-        XftColorFree(display, visual, colormap, &seconds_color);
-        XftColorFree(display, visual, colormap, &date_color);
-        XftColorFree(display, visual, colormap, &color);
+    for (; allocated_colors < COLOR_COUNT; ++allocated_colors) {
+        if (allocate_color(display, visual, colormap, color_values[allocated_colors],
+                           &colors[allocated_colors]) == 0)
+            continue;
+        fputs("failed to allocate clock color\n", stderr);
+        while (allocated_colors > 0) {
+            allocated_colors--;
+            XftColorFree(display, visual, colormap, &colors[allocated_colors]);
+        }
         XftFontClose(display, font);
         XftDrawDestroy(draw);
         XDestroyWindow(display, window);
@@ -435,10 +593,12 @@ int main(void) {
     char previous_text[CCLOCK_RENDER_TEXT_BUFFER_SIZE];
     previous_text[0] = '\0';
     char previous_workspace[CCLOCK_WORKSPACE_TEXT_BUFFER_SIZE];
+    char previous_battery[CCLOCK_BATTERY_TEXT_BUFFER_SIZE];
     char previous_date[CCLOCK_DATE_TEXT_BUFFER_SIZE];
     char previous_time[CCLOCK_TEXT_BUFFER_SIZE];
     char previous_seconds[CCLOCK_SECONDS_TEXT_BUFFER_SIZE];
-    previous_workspace[0] = previous_date[0] = previous_time[0] = previous_seconds[0] = '\0';
+    previous_workspace[0] = previous_battery[0] = previous_date[0] = previous_time[0]
+        = previous_seconds[0] = '\0';
     char workspace[CCLOCK_WORKSPACE_TEXT_BUFFER_SIZE];
     update_workspace(display, RootWindow(display, screen), workspace_atom, workspace,
                      sizeof(workspace));
@@ -455,10 +615,10 @@ int main(void) {
             }
             if (event.type == Expose) {
                 if (previous_text[0] != '\0') {
-                    draw_clock(display, window, draw, font, &color, &date_color,
-                               &seconds_color, &workspace_color, previous_workspace,
-                               previous_date, previous_time, previous_seconds, previous_text,
-                               width, height);
+                    draw_clock(display, window, draw, font, RootWindow(display, screen),
+                               DefaultVisual(display, screen), colors, previous_workspace,
+                               previous_battery, previous_date, previous_time,
+                               previous_seconds, previous_text, width, height);
                 }
             }
             if (event.type == PropertyNotify && event.xproperty.window == RootWindow(display, screen)
@@ -491,25 +651,32 @@ int main(void) {
             fputs("strftime failed\n", stderr);
             break;
         }
+        char battery[CCLOCK_BATTERY_TEXT_BUFFER_SIZE];
+        battery_remaining_time(battery, sizeof(battery));
         char text[CCLOCK_RENDER_TEXT_BUFFER_SIZE];
         int written = workspace[0]
-                          ? snprintf(text, sizeof(text), "%s%s%s%s%s", workspace,
-                                     CCLOCK_WORKSPACE_SEPARATOR, date, time_text, seconds)
-                          : snprintf(text, sizeof(text), "%s%s%s", date, time_text, seconds);
+                          ? snprintf(text, sizeof(text), "%s%s%s%s%s%s", workspace,
+                                     CCLOCK_WORKSPACE_SEPARATOR, battery, date, time_text,
+                                     seconds)
+                          : snprintf(text, sizeof(text), "%s%s%s%s", battery, date,
+                                     time_text, seconds);
         if (written < 0 || (size_t)written >= sizeof(text)) {
-            fputs("workspace and clock text exceed CCLOCK_RENDER_TEXT_BUFFER_SIZE\n", stderr);
+            fputs("battery, workspace, and clock text exceed CCLOCK_RENDER_TEXT_BUFFER_SIZE\n",
+                  stderr);
             break;
         }
 
-        if (visible && (needs_redraw || strcmp(text, previous_text) != 0)) {
+        if (visible && (CCLOCK_DYNAMIC_COLOURS || needs_redraw
+                        || strcmp(text, previous_text) != 0)) {
             resize_for_text(display, screen, window, font, text, &width, &height);
-            draw_clock(display, window, draw, font, &color, &date_color, &seconds_color,
-                       &workspace_color, workspace, date, time_text, seconds, text, width,
-                       height);
+            draw_clock(display, window, draw, font, RootWindow(display, screen),
+                       DefaultVisual(display, screen), colors, workspace, battery, date,
+                       time_text, seconds, text, width, height);
             needs_redraw = false;
         }
         snprintf(previous_text, sizeof(previous_text), "%s", text);
         snprintf(previous_workspace, sizeof(previous_workspace), "%s", workspace);
+        snprintf(previous_battery, sizeof(previous_battery), "%s", battery);
         snprintf(previous_date, sizeof(previous_date), "%s", date);
         snprintf(previous_time, sizeof(previous_time), "%s", time_text);
         snprintf(previous_seconds, sizeof(previous_seconds), "%s", seconds);
@@ -539,10 +706,10 @@ int main(void) {
             handle_control(control_fd, display, window, &visible, &needs_redraw);
     }
 
-    XftColorFree(display, visual, colormap, &color);
-    XftColorFree(display, visual, colormap, &date_color);
-    XftColorFree(display, visual, colormap, &seconds_color);
-    XftColorFree(display, visual, colormap, &workspace_color);
+    while (allocated_colors > 0) {
+        allocated_colors--;
+        XftColorFree(display, visual, colormap, &colors[allocated_colors]);
+    }
     XftFontClose(display, font);
     XftDrawDestroy(draw);
     XDestroyWindow(display, window);
