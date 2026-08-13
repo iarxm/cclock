@@ -1,0 +1,35 @@
+[QUEUED]
+
+cclock follow-up plan
+
+1. text sizing contract
+replace the ambiguous sample-text sizing knob with an explicit widest-layout string
+- keep sizing build-time only in src/config.h
+- make the name reflect that it controls the window width budget
+
+2. safer time buffers
+add a dedicated text buffer size setting in src/config.h
+- stop relying on fixed 16-byte buffers in src/main.c
+- fail early if the configured layout string does not fit the configured buffer
+
+3. sample service hardening
+keep the service optional, but make it more realistic as a sample
+- treat it as a template for user-session environment
+- avoid pretending it will work universally without DISPLAY and XAUTHORITY
+
+4. verification
+after changes land
+- rebuild with make
+- verify the updated config path still controls sizing
+
+5. cclock control interface (completed)
+- add a local cclockctl client and cclock socket commands for visibility
+
+6. dwm workspace display (completed)
+- publish the selected monitor's active tag set as `_CCLOCK_WORKSPACE`
+- render that tag set before the time
+
+7. contrast-aware colour
+- decide whether contrast is relative to the root background, the window below,
+  or a fixed translucent backing plate
+- prototype the selected approach without compromising click-through behavior
