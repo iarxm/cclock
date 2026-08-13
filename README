@@ -1,4 +1,26 @@
-cclock
+# cclock
 
-Transparent, click-through clock overlay for X11
+Transparent, click-through clock overlay for X11.
 
+`cclockctl` controls the running overlay without changing its service lifecycle:
+
+```
+cclockctl toggle
+cclockctl show
+cclockctl hide
+cclockctl status
+```
+
+The control socket is `$XDG_RUNTIME_DIR/cclock.sock`, or `/tmp/cclock-UID.sock`
+when `XDG_RUNTIME_DIR` is unavailable.
+
+When used with this `dwm` build, cclock also renders the selected monitor's
+active tag set before the time (for example, `3 131405` or `1+3 131405`).
+
+`CCLOCK_DATE_FORMAT` is rendered in `CCLOCK_DATE_*` colours. It defaults to
+`"%d"`, preserving the original display. Set it to `"%m%d"` to highlight both
+month and day; the remainder stays in `CCLOCK_TIME_FORMAT` and the base colour.
+
+`CCLOCK_SECONDS_FORMAT` uses `CCLOCK_SECONDS_*` colours, and workspace tags use
+`CCLOCK_WORKSPACE_*` colours. The four render spans are workspace, date,
+hours/minutes, and seconds.

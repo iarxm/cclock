@@ -1,1 +1,5 @@
 *
+!src/
+!src/cclockctl.c
+!.AGENTS/
+!.AGENTS/PLAN
