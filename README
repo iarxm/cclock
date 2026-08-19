@@ -29,14 +29,31 @@ month and day; the remainder stays in `CCLOCK_TIME_FORMAT` and the base colour.
 `CCLOCK_WORKSPACE_*` colours. The render spans are workspace, remaining battery
 time, date, hours/minutes, and seconds.
 
-`CCLOCK_DYNAMIC_COLOURS` defaults to `0`, preserving the configured colours
-unchanged. Set it to `1` to select a light or dark equivalent of each configured
-span colour from the luminance of the root background beneath it. This samples
-the root background, rather than the compositor's final scene, so it is intended
-for wallpaper/root-colour contrast.
+`CCLOCK_DYNAMIC_COLOURS` defaults to `1`. It selects a light or dark equivalent
+of each configured span colour from the luminance of the root background beneath
+it. This samples the root background, rather than the compositor's final scene,
+so it is intended for wallpaper/root-colour contrast. Set it to `0` to use the
+configured colours unchanged.
 
-Colour profiles are selected in `src/config.h`. `CCLOCK_THEME_SOLID` is the
-original palette and remains the default. Set `CCLOCK_COLOUR_THEME` to
-`CCLOCK_THEME_GREYSCALE` for the neutral profile: workspace is darkest, then
-date, seconds, and the main clock digits. Rebuild and restart cclock after a
+Colour profiles are selected in `src/config.h`. Both profiles now use a neutral
+palette; `CCLOCK_THEME_GREYSCALE` is the default profile, with this visual
+hierarchy:
+
+1. Hours and minutes, then remaining battery time.
+2. Date, then seconds.
+3. Workspace.
+
+Each adjacent span has a deliberate neutral step within that hierarchy. On a
+dark backdrop, the main clock is brightest and workspace is dimmest. On a light
+backdrop, the hierarchy reverses for legibility: hours/minutes are black,
+battery is near-black, and the lower-priority spans become progressively
+lighter greys. The adaptive equivalents preserve those steps instead of
+compressing them, so parts remain clearly distinguishable in either mode.
+
+This is a contrast principle, not merely a colour preference: saturated light
+colours can disappear against a white surface, and a single fixed shade cannot
+provide strong contrast on both pure black and pure white. Use greyscale with
+dynamic equivalents to preserve the ordering on either root backdrop. Keep the
+spans separate so the hierarchy remains readable; do not reintroduce bright
+accent colours as a substitute for contrast. Rebuild and restart cclock after a
 theme change.
