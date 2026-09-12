@@ -28,16 +28,19 @@ static const time_t STACK_REFRESH_INTERVAL_SECONDS = 5 * 60;
 enum color_index {
     COLOR_TEXT,
     COLOR_BATTERY,
+    COLOR_LOW_BATTERY,
     COLOR_DATE,
     COLOR_SECONDS,
     COLOR_WORKSPACE,
     COLOR_LIGHT_TEXT,
     COLOR_LIGHT_BATTERY,
+    COLOR_LIGHT_LOW_BATTERY,
     COLOR_LIGHT_DATE,
     COLOR_LIGHT_SECONDS,
     COLOR_LIGHT_WORKSPACE,
     COLOR_DARK_TEXT,
     COLOR_DARK_BATTERY,
+    COLOR_DARK_LOW_BATTERY,
     COLOR_DARK_DATE,
     COLOR_DARK_SECONDS,
     COLOR_DARK_WORKSPACE,
@@ -63,6 +66,10 @@ static XRenderColor dark_equivalent(XRenderColor color, enum color_index base) {
     case COLOR_BATTERY:
         level = 0x2020;
         break;
+    case COLOR_LOW_BATTERY:
+        color.red = 0xb000;
+        color.green = color.blue = 0x0000;
+        return color;
     case COLOR_DATE:
         level = 0x5050;
         break;
@@ -451,8 +458,9 @@ static void draw_clock(Display *display, Window window, XftDraw *draw, XftFont *
     if (workspace[0] != '\0')
         x = draw_span(display, root, root_visual, draw, font, colors, COLOR_TEXT,
                       CCLOCK_WORKSPACE_SEPARATOR, root_x, root_y, x, y, window_height);
-    x = draw_span(display, root, root_visual, draw, font, colors, COLOR_BATTERY, battery,
-                  root_x, root_y, x, y, window_height);
+    x = draw_span(display, root, root_visual, draw, font, colors,
+                  battery[0] == '\0' ? COLOR_BATTERY : COLOR_LOW_BATTERY, battery, root_x,
+                  root_y, x, y, window_height);
     x = draw_span(display, root, root_visual, draw, font, colors, COLOR_DATE, date,
                   root_x, root_y, x, y, window_height);
     x = draw_span(display, root, root_visual, draw, font, colors, COLOR_TEXT, time_text,
@@ -580,6 +588,8 @@ int main(void) {
                          CCLOCK_TEXT_ALPHA },
         [COLOR_BATTERY] = { CCLOCK_BATTERY_RED, CCLOCK_BATTERY_GREEN,
                             CCLOCK_BATTERY_BLUE, CCLOCK_BATTERY_ALPHA },
+        [COLOR_LOW_BATTERY] = { CCLOCK_LOW_BATTERY_RED, CCLOCK_LOW_BATTERY_GREEN,
+                                CCLOCK_LOW_BATTERY_BLUE, CCLOCK_LOW_BATTERY_ALPHA },
         [COLOR_DATE] = { CCLOCK_DATE_RED, CCLOCK_DATE_GREEN, CCLOCK_DATE_BLUE,
                          CCLOCK_DATE_ALPHA },
         [COLOR_SECONDS] = { CCLOCK_SECONDS_RED, CCLOCK_SECONDS_GREEN,
