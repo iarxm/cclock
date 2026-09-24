@@ -1,7 +1,7 @@
 #ifndef CCLOCK_CONFIG_H
 #define CCLOCK_CONFIG_H
 
-#define CCLOCK_FONT_NAME "Monospace:size=36"
+#define CCLOCK_FONT_NAME "DejaVu Sans:style=ExtraLight:size=36"
 #define CCLOCK_TEXT_BUFFER_SIZE 64
 #define CCLOCK_BATTERY_TEXT_BUFFER_SIZE 64
 #define CCLOCK_DATE_TEXT_BUFFER_SIZE 64
@@ -20,14 +20,17 @@
 #define CCLOCK_COLOUR_THEME CCLOCK_THEME_SOLID
 */
 
-/* Preserve the neutral hierarchy against light and dark root backdrops. */
-#define CCLOCK_DYNAMIC_COLOURS 1
+/* Use the configured neutral palette without root-background adaptation. */
+#define CCLOCK_DYNAMIC_COLOURS 0
+
+/* Hide the overlay while its rectangle overlaps a visible mpv window. */
+#define CCLOCK_HIDE_OVER_MPV 1
 
 #if CCLOCK_COLOUR_THEME == CCLOCK_THEME_SOLID
 /* Neutral fallback palette, kept uniform when adaptive colours are disabled. */
-#define CCLOCK_TEXT_RED 0xb0b0
-#define CCLOCK_TEXT_GREEN 0xb0b0
-#define CCLOCK_TEXT_BLUE 0xb0b0
+#define CCLOCK_TEXT_RED 0xd0d0
+#define CCLOCK_TEXT_GREEN 0xd0d0
+#define CCLOCK_TEXT_BLUE 0xd0d0
 #define CCLOCK_TEXT_ALPHA 0xffff
 
 #define CCLOCK_BATTERY_RED 0x9090
@@ -55,10 +58,10 @@
 #define CCLOCK_WORKSPACE_BLUE 0x2020
 #define CCLOCK_WORKSPACE_ALPHA 0xffff
 #elif CCLOCK_COLOUR_THEME == CCLOCK_THEME_GREYSCALE
-/* Neutral hierarchy: main and battery, date and seconds, then workspace. */
-#define CCLOCK_TEXT_RED 0xb0b0
-#define CCLOCK_TEXT_GREEN 0xb0b0
-#define CCLOCK_TEXT_BLUE 0xb0b0
+/* Neutral hierarchy: main time is the lightest span, then battery through workspace. */
+#define CCLOCK_TEXT_RED 0xd0d0
+#define CCLOCK_TEXT_GREEN 0xd0d0
+#define CCLOCK_TEXT_BLUE 0xd0d0
 #define CCLOCK_TEXT_ALPHA 0xffff
 
 #define CCLOCK_BATTERY_RED 0x9090

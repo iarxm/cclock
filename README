@@ -11,6 +11,12 @@ cclockctl hide
 cclockctl status
 ```
 
+By default, cclock temporarily hides itself whenever its on-screen rectangle
+overlaps a visible window whose X11 `WM_CLASS` is `mpv`; it reappears when that
+overlap ends. This leaves `cclockctl hide` as an explicit manual hide. Set
+`CCLOCK_HIDE_OVER_MPV` to `0` in `src/config.h` and rebuild to disable the
+automatic behaviour.
+
 The control socket is `$XDG_RUNTIME_DIR/cclock.sock`, or `/tmp/cclock-UID.sock`
 when `XDG_RUNTIME_DIR` is unavailable.
 
@@ -29,7 +35,7 @@ month and day; the remainder stays in `CCLOCK_TIME_FORMAT` and the base colour.
 `CCLOCK_WORKSPACE_*` colours. The render spans are workspace, remaining battery
 time, date, hours/minutes, and seconds.
 
-`CCLOCK_DYNAMIC_COLOURS` defaults to `1`. It selects a light or dark equivalent
+`CCLOCK_DYNAMIC_COLOURS` defaults to `0`. When enabled, it selects a light or dark equivalent
 of each configured span colour from the luminance of the root background beneath
 it. This samples the root background, rather than the compositor's final scene,
 so it is intended for wallpaper/root-colour contrast. Set it to `0` to use the
@@ -43,12 +49,11 @@ hierarchy:
 2. Date, then seconds.
 3. Workspace.
 
-Each adjacent span has a deliberate neutral step within that hierarchy. On a
-dark backdrop, the main clock is brightest and workspace is dimmest. On a light
-backdrop, the hierarchy reverses for legibility: hours/minutes are black,
-battery is near-black, and the lower-priority spans become progressively
-lighter greys. The adaptive equivalents preserve those steps instead of
-compressing them, so parts remain clearly distinguishable in either mode.
+Each adjacent span has a deliberate neutral step within that hierarchy. The
+hours/minutes span remains the lightest grey on both dark and light backdrops;
+battery through workspace step progressively darker. The adaptive equivalents
+preserve those steps instead of compressing them, so parts remain clearly
+distinguishable in either mode.
 
 This is a contrast principle, not merely a colour preference: saturated light
 colours can disappear against a white surface, and a single fixed shade cannot

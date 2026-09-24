@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -61,23 +62,23 @@ static XRenderColor dark_equivalent(XRenderColor color, enum color_index base) {
 
     switch (base) {
     case COLOR_TEXT:
-        level = 0x0000;
+        level = 0x4040;
         break;
     case COLOR_BATTERY:
-        level = 0x2020;
+        level = 0x3030;
         break;
     case COLOR_LOW_BATTERY:
         color.red = 0xb000;
         color.green = color.blue = 0x0000;
         return color;
     case COLOR_DATE:
-        level = 0x5050;
+        level = 0x2020;
         break;
     case COLOR_SECONDS:
-        level = 0x7070;
+        level = 0x1010;
         break;
     case COLOR_WORKSPACE:
-        level = 0x9090;
+        level = 0x0000;
         break;
     default:
         level = color.red / 2;
@@ -90,6 +91,21 @@ static XRenderColor dark_equivalent(XRenderColor color, enum color_index base) {
 static int allocate_color(Display *display, Visual *visual, Colormap colormap,
                           XRenderColor color, XftColor *result) {
     return XftColorAllocValue(display, visual, colormap, &color, result) ? 0 : -1;
+}
+
+static int create_back_buffer(Display *display, Window window, int depth,
+                              XRenderPictFormat *format, int width, int height,
+                              Pixmap *buffer, Picture *picture) {
+    *buffer = XCreatePixmap(display, window, (unsigned int)width, (unsigned int)height,
+                            (unsigned int)depth);
+    if (*buffer == None)
+        return -1;
+    *picture = XRenderCreatePicture(display, *buffer, format, 0, NULL);
+    if (*picture != None)
+        return 0;
+    XFreePixmap(display, *buffer);
+    *buffer = None;
+    return -1;
 }
 
 static int read_power_supply_value(const char *battery, const char *name, long long *value) {
@@ -228,8 +244,8 @@ static int create_control_socket(const char *path) {
     return fd;
 }
 
-static void handle_control(int control_fd, Display *display, Window window, int *visible,
-                           bool *needs_redraw) {
+static void handle_control(int control_fd, int *visible, bool *needs_redraw,
+                           bool obscured_by_mpv) {
     char command[32];
     bool state_changed = false;
     int client_fd;
@@ -258,13 +274,9 @@ static void handle_control(int control_fd, Display *display, Window window, int 
         return;
     }
     if (state_changed && *visible) {
-        XMapRaised(display, window);
         *needs_redraw = true;
-    } else if (state_changed) {
-        XUnmapWindow(display, window);
     }
-    dprintf(client_fd, "%s\n", *visible ? "shown" : "hidden");
-    XFlush(display);
+    dprintf(client_fd, "%s\n", *visible && !obscured_by_mpv ? "shown" : "hidden");
     close(client_fd);
 }
 
@@ -325,6 +337,71 @@ static void set_window_type(Display *display, Window window, Atom property, cons
     Atom value = XInternAtom(display, type, False);
     XChangeProperty(display, window, property, XA_ATOM, 32, PropModeReplace,
                     (unsigned char *)&value, 1);
+}
+
+static bool rectangles_intersect(int ax, int ay, unsigned int aw, unsigned int ah, int bx,
+                                 int by, unsigned int bw, unsigned int bh) {
+    return ax < bx + (int)bw && bx < ax + (int)aw && ay < by + (int)bh
+        && by < ay + (int)ah;
+}
+
+static bool window_is_mpv(Display *display, Window window) {
+    XClassHint hint = { 0 };
+    bool is_mpv = false;
+
+    if (XGetClassHint(display, window, &hint)) {
+        is_mpv = (hint.res_name != NULL && !strcasecmp(hint.res_name, "mpv"))
+            || (hint.res_class != NULL && !strcasecmp(hint.res_class, "mpv"));
+    }
+    if (hint.res_name != NULL)
+        XFree(hint.res_name);
+    if (hint.res_class != NULL)
+        XFree(hint.res_class);
+    return is_mpv;
+}
+
+static bool mpv_covers_clock(Display *display, Window root, Window parent, Window clock,
+                             int clock_x, int clock_y, unsigned int clock_width,
+                             unsigned int clock_height) {
+    Window root_return;
+    Window parent_return;
+    Window *children = NULL;
+    unsigned int child_count = 0;
+    bool covered = false;
+
+    if (!XQueryTree(display, parent, &root_return, &parent_return, &children, &child_count))
+        return false;
+    for (unsigned int i = 0; i < child_count && !covered; ++i) {
+        XWindowAttributes attributes;
+
+        if (children[i] == clock
+            || !XGetWindowAttributes(display, children[i], &attributes)
+            || attributes.map_state != IsViewable)
+            continue;
+        if (window_is_mpv(display, children[i])) {
+            Window translated_child;
+            int x;
+            int y;
+            unsigned int width;
+            unsigned int height;
+            unsigned int border;
+            unsigned int depth;
+
+            if (XGetGeometry(display, children[i], &root_return, &x, &y, &width, &height,
+                             &border, &depth)
+                && XTranslateCoordinates(display, children[i], root, 0, 0, &x, &y,
+                                         &translated_child)
+                && rectangles_intersect(clock_x, clock_y, clock_width, clock_height, x, y,
+                                        width, height))
+                covered = true;
+        }
+        if (!covered)
+            covered = mpv_covers_clock(display, root, children[i], clock, clock_x, clock_y,
+                                       clock_width, clock_height);
+    }
+    if (children != NULL)
+        XFree(children);
+    return covered;
 }
 
 static void measure_text(Display *display, XftFont *font, const char *text,
@@ -394,15 +471,22 @@ static void move_to_bottom_right(Display *display, int screen, Window window,
                       (unsigned int)window_height);
 }
 
-static void resize_for_text(Display *display, int screen, Window window, XftFont *font,
+static bool resize_for_text(Display *display, int screen, Window window, XftFont *font,
                             const char *text, int *window_width, int *window_height) {
     int text_width = 0;
     int text_height = 0;
+    int new_width;
+    int new_height;
 
     measure_text(display, font, text, &text_width, &text_height);
-    *window_width = text_width + (CCLOCK_PADDING_X * 2);
-    *window_height = text_height + (CCLOCK_PADDING_Y * 2);
+    new_width = text_width + (CCLOCK_PADDING_X * 2);
+    new_height = text_height + (CCLOCK_PADDING_Y * 2);
+    if (*window_width == new_width && *window_height == new_height)
+        return false;
+    *window_width = new_width;
+    *window_height = new_height;
     move_to_bottom_right(display, screen, window, *window_width, *window_height);
+    return true;
 }
 
 static int draw_text(Display *display, XftDraw *draw, XftFont *font, XftColor *color,
@@ -435,8 +519,9 @@ static int draw_span(Display *display, Window root, Visual *root_visual, XftDraw
                      text, x, y);
 }
 
-static void draw_clock(Display *display, Window window, XftDraw *draw, XftFont *font,
-                       Window root, Visual *root_visual, XftColor *colors,
+static void draw_clock(Display *display, Window window, Pixmap back_buffer,
+                       Picture back_picture, Picture window_picture, XftDraw *draw,
+                       XftFont *font, Window root, Visual *root_visual, XftColor *colors,
                        const char *workspace, const char *battery, const char *date,
                        const char *time_text, const char *seconds, const char *text,
                        int window_width, int window_height) {
@@ -452,7 +537,10 @@ static void draw_clock(Display *display, Window window, XftDraw *draw, XftFont *
     int root_y = DisplayHeight(display, DefaultScreen(display)) - window_height
         - CCLOCK_MARGIN_BOTTOM;
 
-    XClearWindow(display, window);
+    XRenderColor transparent = { 0, 0, 0, 0 };
+    XRenderFillRectangle(display, PictOpSrc, back_picture, &transparent, 0, 0,
+                         (unsigned int)window_width, (unsigned int)window_height);
+    XftDrawChange(draw, back_buffer);
     x = draw_span(display, root, root_visual, draw, font, colors, COLOR_WORKSPACE,
                   workspace, root_x, root_y, x, y, window_height);
     if (workspace[0] != '\0')
@@ -467,6 +555,9 @@ static void draw_clock(Display *display, Window window, XftDraw *draw, XftFont *
                   root_x, root_y, x, y, window_height);
     draw_span(display, root, root_visual, draw, font, colors, COLOR_SECONDS, seconds,
               root_x, root_y, x, y, window_height);
+    XRenderComposite(display, PictOpSrc, back_picture, None, window_picture, 0, 0, 0, 0,
+                     0, 0, (unsigned int)window_width, (unsigned int)window_height);
+    XftDrawChange(draw, window);
     XFlush(display);
     (void)window_height;
 }
@@ -583,6 +674,28 @@ int main(void) {
     resize_for_text(display_for_metrics, screen, window, font, CCLOCK_LAYOUT_TEXT, &width,
                     &height);
 
+    XRenderPictFormat *format = XRenderFindVisualFormat(display, visual);
+    Picture window_picture = format == NULL ? None
+                                            : XRenderCreatePicture(display, window, format, 0,
+                                                                   NULL);
+    Pixmap back_buffer;
+    Picture back_picture;
+    if (window_picture == None
+        || create_back_buffer(display, window, depth, format, width, height, &back_buffer,
+                              &back_picture) != 0) {
+        fputs("failed to create clock back buffer\n", stderr);
+        if (window_picture != None)
+            XRenderFreePicture(display, window_picture);
+        XftFontClose(display, font);
+        XftDrawDestroy(draw);
+        XDestroyWindow(display, window);
+        XFreeColormap(display, colormap);
+        XCloseDisplay(display);
+        close(control_fd);
+        unlink(control_path);
+        return 1;
+    }
+
     XRenderColor configured_colors[COLOR_WORKSPACE + 1] = {
         [COLOR_TEXT] = { CCLOCK_TEXT_RED, CCLOCK_TEXT_GREEN, CCLOCK_TEXT_BLUE,
                          CCLOCK_TEXT_ALPHA },
@@ -641,7 +754,9 @@ int main(void) {
                      sizeof(workspace));
     time_t next_stack_refresh = time(NULL) + STACK_REFRESH_INTERVAL_SECONDS;
     bool needs_redraw = false;
+    bool obscured_by_mpv = false;
     int visible = 1;
+    int mapped = 1;
 
     while (keep_running) {
         while (XPending(display) > 0) {
@@ -652,7 +767,8 @@ int main(void) {
             }
             if (event.type == Expose) {
                 if (previous_text[0] != '\0') {
-                    draw_clock(display, window, draw, font, RootWindow(display, screen),
+                    draw_clock(display, window, back_buffer, back_picture, window_picture,
+                               draw, font, RootWindow(display, screen),
                                DefaultVisual(display, screen), colors, previous_workspace,
                                previous_battery, previous_date, previous_time,
                                previous_seconds, previous_text, width, height);
@@ -705,11 +821,34 @@ int main(void) {
 
         if (visible && (CCLOCK_DYNAMIC_COLOURS || needs_redraw
                         || strcmp(text, previous_text) != 0)) {
-            resize_for_text(display, screen, window, font, text, &width, &height);
-            draw_clock(display, window, draw, font, RootWindow(display, screen),
-                       DefaultVisual(display, screen), colors, workspace, battery, date,
-                       time_text, seconds, text, width, height);
+            if (resize_for_text(display, screen, window, font, text, &width, &height)) {
+                XRenderFreePicture(display, back_picture);
+                XFreePixmap(display, back_buffer);
+                if (create_back_buffer(display, window, depth, format, width, height,
+                                       &back_buffer, &back_picture) != 0) {
+                    fputs("failed to resize clock back buffer\n", stderr);
+                    break;
+                }
+            }
+            draw_clock(display, window, back_buffer, back_picture, window_picture, draw, font,
+                       RootWindow(display, screen), DefaultVisual(display, screen), colors,
+                       workspace, battery, date, time_text, seconds, text, width, height);
             needs_redraw = false;
+        }
+
+        obscured_by_mpv = CCLOCK_HIDE_OVER_MPV
+            && mpv_covers_clock(display, RootWindow(display, screen),
+                                RootWindow(display, screen), window,
+                                DisplayWidth(display, screen) - width - CCLOCK_MARGIN_RIGHT,
+                                DisplayHeight(display, screen) - height - CCLOCK_MARGIN_BOTTOM,
+                                (unsigned int)width, (unsigned int)height);
+        if (visible && !obscured_by_mpv && !mapped) {
+            XMapRaised(display, window);
+            mapped = 1;
+            needs_redraw = true;
+        } else if ((!visible || obscured_by_mpv) && mapped) {
+            XUnmapWindow(display, window);
+            mapped = 0;
         }
         snprintf(previous_text, sizeof(previous_text), "%s", text);
         snprintf(previous_workspace, sizeof(previous_workspace), "%s", workspace);
@@ -718,7 +857,7 @@ int main(void) {
         snprintf(previous_time, sizeof(previous_time), "%s", time_text);
         snprintf(previous_seconds, sizeof(previous_seconds), "%s", seconds);
 
-        if (now >= next_stack_refresh) {
+        if (mapped && now >= next_stack_refresh) {
             XRaiseWindow(display, window);
             XFlush(display);
             next_stack_refresh = now + STACK_REFRESH_INTERVAL_SECONDS;
@@ -740,13 +879,16 @@ int main(void) {
             break;
         }
         if (poll_result > 0 && fds[1].revents & POLLIN)
-            handle_control(control_fd, display, window, &visible, &needs_redraw);
+            handle_control(control_fd, &visible, &needs_redraw, obscured_by_mpv);
     }
 
     while (allocated_colors > 0) {
         allocated_colors--;
         XftColorFree(display, visual, colormap, &colors[allocated_colors]);
     }
+    XRenderFreePicture(display, back_picture);
+    XFreePixmap(display, back_buffer);
+    XRenderFreePicture(display, window_picture);
     XftFontClose(display, font);
     XftDrawDestroy(draw);
     XDestroyWindow(display, window);
